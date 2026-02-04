@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatGPT Apps Builder"
+  short_description: "Scaffold & deploy ChatGPT Apps SDK projects"
+  default_prompt: "Use $chatgpt-apps-builder to scaffold a ChatGPT app."
