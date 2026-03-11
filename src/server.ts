@@ -18,10 +18,16 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const WEB_DIST = path.resolve(ROOT_DIR, "web", "dist");
 
 function readWidgetHtml(): string {
-  const manifestPath = path.join(WEB_DIST, "manifest.json");
-  if (!fs.existsSync(manifestPath)) {
+  const manifestCandidates = [
+    path.join(WEB_DIST, "manifest.json"),
+    path.join(WEB_DIST, ".vite", "manifest.json"),
+  ];
+  const manifestPath = manifestCandidates.find((candidate) =>
+    fs.existsSync(candidate)
+  );
+  if (!manifestPath) {
     throw new Error(
-      `Missing web build manifest at ${manifestPath}. Run \"pnpm --dir web build\" first.`
+      `Missing web build manifest at ${manifestCandidates.join(" or ")}. Run "pnpm --dir web build" first.`
     );
   }
 
@@ -114,7 +120,7 @@ export function getServer(): McpServer {
       structuredContent: {
         stage: "done",
         logs: ["Apps Builder is online."],
-        deployment: { provider: "vercel" },
+        deployment: { provider: "local" },
         requirements: null,
         buildPlan: null,
         question: null,

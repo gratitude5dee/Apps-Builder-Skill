@@ -3,6 +3,7 @@ export function renderGitignore() {
     "node_modules/",
     "dist/",
     "web/dist/",
+    ".supreme/",
     ".env",
     ".DS_Store",
     "pnpm-lock.yaml",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SupremeAppsBuilder"
+  short_description: "Adaptive ChatGPT Apps SDK builder with validation and smoke benchmarks"
+  default_prompt: "Use $chatgpt-apps-builder to build a production-grade ChatGPT app."

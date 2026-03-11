@@ -1,73 +1,48 @@
-# Apps Builder Skill (Apps SDK)
+# Apps Builder Skill (SupremeAppsBuilder v2)
 
-A production-ready builder that interviews users, generates a full ChatGPT Apps SDK project, validates it, and deploys via Netlify/Cloudflare/Vercel.
+An upgraded ChatGPT Apps SDK builder that interviews the user adaptively, generates a modern widget + MCP server scaffold, validates the result, runs a smoke benchmark, and returns deployment or local preview instructions.
 
-## Quick Start (1-2 minutes)
+## Quick Start
 
-1. Install dependencies:
-   `pnpm install`
-2. Start dev servers:
-   `pnpm dev`
-3. Build the widget bundle (once):
-   `pnpm build:web`
-4. Start the MCP server if not already running:
-   `pnpm dev:server`
+1. Install dependencies: `pnpm install`
+2. Start dev servers: `pnpm dev`
+3. Build the widget bundle once: `pnpm build:web`
+4. Start the MCP server if needed: `pnpm dev:server`
+
+## Skill Surfaces
+
+- `skill/chatgpt-apps-builder/`: compatibility skill manifest that now targets the v2 runtime.
+- `skill/supreme-apps-builder/`: side-by-side marketplace-ready v2 manifest.
+- `src/skills/appsBuilderSkill/`: adaptive interview, refinement loop, planning, and generation.
+- `src/builder/templates/`: v2 template families for `mcp-apps-kit-react` and `server-node-ts`.
+- `src/mcp/`: smoke harness and benchmark primitives.
+- `skillsbench/`: explicit benchmark CLI and JSON artifact writer.
 
 ## Developer Mode Testing
 
-1. Enable developer mode: Settings -> Apps & Connectors -> Advanced settings.
-2. Expose your MCP server over HTTPS (ngrok or Cloudflare Tunnel).
+1. Enable developer mode in ChatGPT.
+2. Expose your MCP server over HTTPS with `cloudflared` or `ngrok`.
 3. Create a connector with your HTTPS `/mcp` URL.
-4. Open a new chat, add the connector from "More," and prompt it.
+4. Open a new chat, add the connector from More, and prompt it.
 
-**Test prompt**
-"Build me an app that summarizes meeting notes and emails a recap."
+## Commands
 
-## Local Dev Flow
+- `pnpm dev`: run server and builder UI in watch mode.
+- `pnpm build:web`: build the widget bundle used by the MCP server.
+- `pnpm test`: run repository Vitest tests.
+- `pnpm typecheck`: run TypeScript checks.
+- `pnpm apps-benchmark`: alias for the SkillsBench harness.
+- `pnpm benchmark -- --suite full`: benchmark generated apps and write `skillsbench/results/latest.json`.
 
-- `pnpm dev`: runs server + UI in watch mode.
-- `pnpm build:web`: builds the UI bundle used by the MCP server.
-- `pnpm build:server`: compiles server TS to `dist/`.
-- `pnpm lint` / `pnpm typecheck`: static checks.
+## Deployment
 
-## Deployment Credentials + MCP Env Vars
+Supported builder outputs:
 
-Set env vars for MCP deployment adapters:
-
-- `NETLIFY_MCP_URL`, `NETLIFY_MCP_TOOL_CREATE`, `NETLIFY_MCP_TOOL_SET_ENV`, `NETLIFY_MCP_TOOL_DEPLOY`
-- `CLOUDFLARE_MCP_URL`, `CLOUDFLARE_MCP_TOOL_CREATE`, `CLOUDFLARE_MCP_TOOL_SET_ENV`, `CLOUDFLARE_MCP_TOOL_DEPLOY`
-- `VERCEL_MCP_URL`, `VERCEL_MCP_TOOL_CREATE`, `VERCEL_MCP_TOOL_SET_ENV`, `VERCEL_MCP_TOOL_DEPLOY`
-
-If MCP URLs are missing, the builder returns CLI fallback steps.
+- `local`: return preview and tunnel instructions.
+- `vercel`, `netlify`, `cloudflare`: use MCP adapters if configured, else return CLI fallback steps.
 
 ## Troubleshooting
 
-- **Widget doesn't render**: run `pnpm build:web` and confirm `web/dist/manifest.json` exists.
-- **No tools listed**: ensure the connector URL is `https://<host>/mcp`.
-- **CSP errors**: update `src/app.config.ts` with correct domains.
-- **Deployment adapter fails**: verify MCP tool names or use CLI fallback.
-
-## Golden Path Example
-
-**Prompt**
-"Build me a dashboard for tracking quarterly OKRs."
-
-**Example answers**
-- App type: dashboard
-- Target user + success: "Leaders need a quick view of OKR progress each quarter."
-- Features: "OKR list, status summary, progress by team"
-- Data/integrations: "none"
-- UI: simple UI
-- Deployment: Vercel MCP
-- Secrets: "none"
-
-**Expected result**
-- Generated project under `generated/okr-dashboard-app/`
-- Deployment URL returned in the tool response
-
-## Editing Templates
-
-Template sources live in:
-- `src/builder/templates/` for scaffolded apps
-- `web/` for the builder UI
-- `src/skills/appsBuilderSkill/` for conversation and generator logic
+- Widget does not render: run `pnpm build:web` and confirm either `web/dist/manifest.json` or `web/dist/.vite/manifest.json` exists.
+- MCP returns method errors: confirm the connector uses an HTTPS URL ending with `/mcp` and ChatGPT is POSTing to it.
+- Deployment adapter fails: verify MCP tool names or use the returned CLI fallback.

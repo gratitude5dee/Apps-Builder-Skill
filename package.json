@@ -13,6 +13,8 @@
     "build": "pnpm build:server && pnpm build:web",
     "build:server": "tsc -p tsconfig.json",
     "build:web": "pnpm --dir web build",
+    "apps-benchmark": "tsx skillsbench/index.ts",
+    "benchmark": "tsx skillsbench/index.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

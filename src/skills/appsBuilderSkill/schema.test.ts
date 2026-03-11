@@ -1,31 +1,51 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+
 import { AppRequirementsSchema } from "./schema.js";
 
 const base = {
   appType: "tool",
-  targetUserAndSuccess: "Teams want a simple helper.",
+  targetUserAndSuccess: "Teams want a production helper. Success means faster execution.",
   primaryFeatures: ["Feature A"],
   dataIntegrations: [],
   uiMode: "simple_ui",
-  deployment: { provider: "vercel", envNames: [] },
+  deployment: { provider: "local", envNames: [] },
+  appName: "Helper",
+  appDescription: "A production helper.",
+  targetUsers: "Operations teams",
+  successMetric: "Faster completion time",
+  toolSpecs: [
+    {
+      name: "feature-a",
+      title: "Feature A",
+      description: "Run feature A",
+      inputSchema: "prompt?: string",
+      interactive: true,
+    },
+  ],
+  widgetSpec: {
+    summary: "Primary widget",
+    components: ["summary panel"],
+    routes: ["/"],
+    bridgeFeatures: ["ui/initialize"],
+    charts: [],
+  },
+  auth: { type: "none" },
+  stackPreset: "mcp_apps_kit_react",
+  refinementBudget: 8,
+  refinements: [],
 };
 
 describe("AppRequirementsSchema", () => {
-  it("rejects more than 7 features", () => {
-    const invalid = {
+  it("accepts the local deployment provider", () => {
+    const result = AppRequirementsSchema.safeParse(base);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects refinement budgets above 8", () => {
+    const result = AppRequirementsSchema.safeParse({
       ...base,
-      primaryFeatures: [
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-        "8",
-      ],
-    };
-    const result = AppRequirementsSchema.safeParse(invalid);
+      refinementBudget: 9,
+    });
     expect(result.success).toBe(false);
   });
 });

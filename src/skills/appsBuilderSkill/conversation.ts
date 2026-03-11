@@ -1,7 +1,10 @@
 import {
   AppRequirementsSchema,
   type AppRequirements,
+  type AuthConfig,
   type DeploymentConfig,
+  type ToolSpec,
+  type WidgetSpec,
 } from "./schema.js";
 import { createBuildPlan, buildPlanSummary, slugify } from "./planner.js";
 
@@ -19,60 +22,80 @@ export type Question = {
   choices?: string[];
 };
 
+export type Completeness = {
+  answered: number;
+  total: number;
+  percent: number;
+  missing: string[];
+  ready: boolean;
+};
+
 export type SkillState = {
   requirements: Partial<AppRequirements>;
   lastQuestionId?: string;
   logs: string[];
   stage: Stage;
   buildPlan?: ReturnType<typeof createBuildPlan>;
-  cancelled?: boolean;
+  askedQuestions: number;
+};
+
+export type InterviewResult = {
+  stage: Stage;
+  question: Question | null;
+  requirements: Partial<AppRequirements>;
+  buildPlan: ReturnType<typeof buildPlanSummary> | null;
+  deployment: { provider?: string };
+  logs: string[];
+  completeness: Completeness;
+  spec: {
+    appName?: string;
+    appDescription?: string;
+    targetUsers?: string;
+    successMetric?: string;
+    stackPreset?: string;
+  };
+  validation: null;
+  benchmark: null;
+  artifacts: null;
+  iterations: [];
 };
 
 const sessions = new Map<string, SkillState>();
 
-const QUESTIONS: Question[] = [
+const QUESTION_BANK: Question[] = [
   {
-    id: "appType",
+    id: "identity",
     prompt:
-      "What are we building? Choose from: tool, content/guide, workflow/automation, dashboard, chat-first assistant, or custom.",
-    choices: [
-      "tool",
-      "content/guide",
-      "workflow/automation",
-      "dashboard",
-      "chat-first assistant",
-      "custom",
-    ],
+      "What is the app called, and what is its one-line description?",
   },
   {
-    id: "targetUserAndSuccess",
+    id: "users",
+    prompt: "Who is this app for?",
+  },
+  {
+    id: "success",
+    prompt: "What is the success metric for this app?",
+  },
+  {
+    id: "features",
     prompt:
-      "Who is this for and what does success look like? (1-2 sentences)",
+      "List the core tools or features. One per line or comma-separated is fine.",
   },
   {
-    id: "primaryFeatures",
-    prompt: "List primary features (up to 7).",
-  },
-  {
-    id: "dataIntegrations",
+    id: "widget",
     prompt:
-      "Data & integrations? (APIs, DB, files, auth). Say 'none' if not needed.",
+      "What should the widget do? Mention interactions, routes/screens, charts, or forms.",
   },
   {
-    id: "uiMode",
+    id: "dataAuth",
     prompt:
-      "UI needs? Choose: chat-only, simple UI, or multi-page UI.",
-    choices: ["chat-only", "simple UI", "multi-page UI"],
+      "What data sources are needed, and what auth model should we support?",
   },
   {
-    id: "deploymentProvider",
-    prompt: "Deployment choice: Netlify MCP, Cloudflare MCP, or Vercel MCP?",
-    choices: ["Netlify", "Cloudflare", "Vercel"],
-  },
-  {
-    id: "envNames",
+    id: "delivery",
     prompt:
-      "Optional: env secret names (names only, comma-separated), or 'none'.",
+      "Deployment target? Choose local, Netlify, Cloudflare, or Vercel. You can also mention secret names.",
+    choices: ["local", "Netlify", "Cloudflare", "Vercel"],
   },
 ];
 
@@ -81,6 +104,7 @@ function defaultState(): SkillState {
     requirements: {},
     logs: [],
     stage: "collecting",
+    askedQuestions: 0,
   };
 }
 
@@ -108,41 +132,151 @@ function normalize(text?: string) {
 }
 
 function parseList(input: string): string[] {
-  const items = input
+  return input
     .split(/\n|,|;|\u2022|\*/)
     .map((item) => item.replace(/^[-*\u2022\s]+/, "").trim())
     .filter(Boolean);
-  return items;
 }
 
 function parseAppType(text: string): AppRequirements["appType"] | null {
   const value = text.toLowerCase();
-  if (value.includes("tool")) return "tool";
-  if (value.includes("content") || value.includes("guide"))
-    return "content_guide";
-  if (value.includes("workflow") || value.includes("automation"))
-    return "workflow_automation";
   if (value.includes("dashboard")) return "dashboard";
-  if (value.includes("chat-first") || value.includes("chat first"))
+  if (value.includes("workflow") || value.includes("automation")) {
+    return "workflow_automation";
+  }
+  if (value.includes("guide") || value.includes("content")) {
+    return "content_guide";
+  }
+  if (value.includes("assistant") || value.includes("chat-first")) {
     return "chat_first_assistant";
-  if (value.includes("custom")) return "custom";
+  }
+  if (value.includes("tool")) return "tool";
+  if (value.includes("app")) return "custom";
   return null;
 }
 
 function parseUiMode(text: string): AppRequirements["uiMode"] | null {
   const value = text.toLowerCase();
-  if (value.includes("chat")) return "chat_only";
-  if (value.includes("multi")) return "multi_page_ui";
-  if (value.includes("simple")) return "simple_ui";
+  if (value.includes("multi-page") || value.includes("multi page")) {
+    return "multi_page_ui";
+  }
+  if (value.includes("chat-only") || value.includes("chat only")) {
+    return "chat_only";
+  }
+  if (
+    value.includes("widget") ||
+    value.includes("dashboard") ||
+    value.includes("form") ||
+    value.includes("chart") ||
+    value.includes("simple ui")
+  ) {
+    return "simple_ui";
+  }
   return null;
 }
 
 function parseProvider(text: string): DeploymentConfig["provider"] | null {
   const value = text.toLowerCase();
+  if (value.includes("local")) return "local";
   if (value.includes("netlify")) return "netlify";
   if (value.includes("cloudflare")) return "cloudflare";
   if (value.includes("vercel")) return "vercel";
   return null;
+}
+
+function parseAuth(text: string): AuthConfig {
+  const value = text.toLowerCase();
+  if (
+    value.includes("none") ||
+    value.includes("no auth") ||
+    value.includes("without auth")
+  ) {
+    return { type: "none" };
+  }
+  if (value.includes("oauth")) {
+    const provider = value.includes("google")
+      ? "google"
+      : value.includes("github")
+        ? "github"
+        : undefined;
+    return { type: "oauth", provider };
+  }
+  if (value.includes("api key")) {
+    return { type: "api_key" };
+  }
+  if (value.includes("session") || value.includes("cookie")) {
+    return { type: "session" };
+  }
+  return { type: "none" };
+}
+
+function inferAppName(text: string): string | undefined {
+  const quoted = text.match(/["“]([^"”]{3,})["”]/);
+  if (quoted?.[1]) {
+    return quoted[1].trim();
+  }
+  const named = text.match(/(?:called|named)\s+([a-zA-Z0-9 _-]{3,})/i);
+  if (named?.[1]) {
+    return named[1].trim();
+  }
+  const words = text
+    .replace(/build me|create|make/gi, "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 4)
+    .join(" ");
+  return words ? words.replace(/[^a-zA-Z0-9 -]/g, "").trim() : undefined;
+}
+
+function inferAppDescription(text: string): string | undefined {
+  const cleaned = text.trim();
+  if (!cleaned) return undefined;
+  return cleaned.endsWith(".") ? cleaned : `${cleaned}.`;
+}
+
+function inferToolSpecs(features: string[]): ToolSpec[] {
+  return features.map((feature) => ({
+    name: slugify(feature),
+    title: feature,
+    description: `Execute the ${feature.toLowerCase()} flow inside the generated app.`,
+    inputSchema: "prompt?: string",
+    interactive: true,
+  }));
+}
+
+function inferWidgetSpec(
+  requirements: Partial<AppRequirements>,
+  widgetAnswer?: string
+): WidgetSpec | undefined {
+  const summary =
+    widgetAnswer?.trim() ||
+    requirements.appDescription ||
+    "Interactive widget for the generated ChatGPT app.";
+  const components = widgetAnswer
+    ? parseList(widgetAnswer).slice(0, 6)
+    : requirements.primaryFeatures?.slice(0, 4) ?? [];
+  const normalizedComponents =
+    components.length > 0 ? components : ["summary panel", "primary action button"];
+  const routes =
+    requirements.uiMode === "multi_page_ui"
+      ? ["/", "/details"]
+      : ["/"];
+  const bridgeFeatures = [
+    "ui/initialize",
+    "ui/notifications/initialized",
+    "ui/notifications/tool-result",
+  ];
+  const charts = normalizedComponents.filter((item) =>
+    /(chart|graph|metric|progress)/i.test(item)
+  );
+
+  return {
+    summary,
+    components: normalizedComponents,
+    routes,
+    bridgeFeatures,
+    charts,
+  };
 }
 
 function parseEnvNames(text: string): string[] {
@@ -151,15 +285,71 @@ function parseEnvNames(text: string): string[] {
   return parseList(text).map((name) => name.toUpperCase());
 }
 
-function inferAppName(text: string): string | undefined {
-  const match = text.match(/(?:called|named)\s+"?([a-zA-Z0-9 _-]{3,})"?/i);
-  if (match?.[1]) {
-    return match[1].trim();
+function applyIdentityAnswer(state: SkillState, answer: string) {
+  const lines = answer
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  state.requirements.appName =
+    lines.length > 0 ? lines[0].replace(/^name:\s*/i, "") : inferAppName(answer);
+  state.requirements.appDescription =
+    lines.length > 1
+      ? lines.slice(1).join(" ")
+      : inferAppDescription(answer) ?? state.requirements.appDescription;
+}
+
+function applyAnswer(state: SkillState, questionId: string, answer: string) {
+  switch (questionId) {
+    case "identity":
+      applyIdentityAnswer(state, answer);
+      break;
+    case "users":
+      state.requirements.targetUsers = answer;
+      break;
+    case "success":
+      state.requirements.successMetric = answer;
+      break;
+    case "features": {
+      const features = parseList(answer).slice(0, 7);
+      if (features.length > 0) {
+        state.requirements.primaryFeatures = features;
+        state.requirements.toolSpecs = inferToolSpecs(features);
+      }
+      break;
+    }
+    case "widget":
+      state.requirements.widgetSpec = inferWidgetSpec(state.requirements, answer);
+      break;
+    case "dataAuth": {
+      const integrations = answer.toLowerCase().includes("none")
+        ? []
+        : parseList(answer).filter(
+            (item) => !/(auth|oauth|api key|session|none)/i.test(item)
+          );
+      state.requirements.dataIntegrations = integrations;
+      state.requirements.auth = parseAuth(answer);
+      break;
+    }
+    case "delivery": {
+      const provider = parseProvider(answer);
+      state.requirements.deployment = {
+        provider: provider ?? "local",
+        envNames: parseEnvNames(answer),
+      };
+      break;
+    }
+    default:
+      break;
   }
-  return undefined;
 }
 
 function inferFromPrompt(state: SkillState, message: string) {
+  if (!message) return;
+
+  if (!state.requirements.rawPrompt) {
+    state.requirements.rawPrompt = message;
+  }
+
   const appType = parseAppType(message);
   if (appType && !state.requirements.appType) {
     state.requirements.appType = appType;
@@ -170,261 +360,240 @@ function inferFromPrompt(state: SkillState, message: string) {
     state.requirements.uiMode = uiMode;
   }
 
+  if (!state.requirements.appName) {
+    const appName = inferAppName(message);
+    if (appName) {
+      state.requirements.appName = appName;
+    }
+  }
+
+  if (!state.requirements.appDescription) {
+    const appDescription = inferAppDescription(message);
+    if (appDescription) {
+      state.requirements.appDescription = appDescription;
+    }
+  }
+
+  if (!state.requirements.primaryFeatures) {
+    const bulletLines = message
+      .split("\n")
+      .filter((line) => /^\s*[-*\u2022]/.test(line));
+    const features = parseList(
+      bulletLines.length > 0 ? bulletLines.join("\n") : message
+    ).slice(0, 7);
+    if (features.length > 1) {
+      state.requirements.primaryFeatures = features;
+      state.requirements.toolSpecs = inferToolSpecs(features);
+    }
+  }
+
   const provider = parseProvider(message);
   if (provider && !state.requirements.deployment?.provider) {
     state.requirements.deployment = {
       provider,
-      envNames: state.requirements.deployment?.envNames ?? [],
+      envNames: parseEnvNames(message),
     };
   }
 
-  const appName = inferAppName(message);
-  if (appName && !state.requirements.appName) {
-    state.requirements.appName = appName;
-  }
-
-  const bullets = message
-    .split("\n")
-    .filter((line) => /^\s*[-*\u2022]/.test(line));
-  if (bullets.length && !state.requirements.primaryFeatures) {
-    const features = parseList(bullets.join("\n")).slice(0, 7);
-    if (features.length) {
-      state.requirements.primaryFeatures = features;
-    }
+  if (!state.requirements.auth) {
+    state.requirements.auth = parseAuth(message);
   }
 }
 
-function applyAnswer(state: SkillState, questionId: string, answer: string) {
-  switch (questionId) {
-    case "appType": {
-      const appType = parseAppType(answer);
-      if (appType) state.requirements.appType = appType;
-      break;
-    }
-    case "targetUserAndSuccess":
-      state.requirements.targetUserAndSuccess = answer;
-      break;
-    case "primaryFeatures": {
-      const features = parseList(answer).slice(0, 7);
-      if (features.length) state.requirements.primaryFeatures = features;
-      break;
-    }
-    case "dataIntegrations": {
-      const integrations = parseList(answer);
-      state.requirements.dataIntegrations =
-        answer.toLowerCase().includes("none") || integrations.length === 0
-          ? []
-          : integrations;
-      break;
-    }
-    case "uiMode": {
-      const uiMode = parseUiMode(answer);
-      if (uiMode) state.requirements.uiMode = uiMode;
-      break;
-    }
-    case "deploymentProvider": {
-      const provider = parseProvider(answer);
-      if (provider) {
-        state.requirements.deployment = {
-          provider,
-          envNames: state.requirements.deployment?.envNames ?? [],
-        };
-      }
-      break;
-    }
-    case "envNames":
-      if (!state.requirements.deployment) {
-        state.requirements.deployment = {
-          provider: "vercel",
-          envNames: [],
-        };
-      }
-      state.requirements.deployment.envNames = parseEnvNames(answer);
-      break;
-    default:
-      break;
-  }
+function finalizeRequirements(
+  requirements: Partial<AppRequirements>
+): AppRequirements | null {
+  const primaryFeatures =
+    requirements.primaryFeatures && requirements.primaryFeatures.length > 0
+      ? requirements.primaryFeatures
+      : requirements.appDescription
+        ? [requirements.appDescription]
+        : [];
+  const toolSpecs =
+    requirements.toolSpecs && requirements.toolSpecs.length > 0
+      ? requirements.toolSpecs
+      : inferToolSpecs(primaryFeatures);
+  const appType =
+    requirements.appType ??
+    (requirements.appDescription
+      ? parseAppType(requirements.appDescription) ?? "custom"
+      : "custom");
+  const uiMode =
+    requirements.uiMode ??
+    (requirements.widgetSpec?.components.some((item) =>
+      /(chart|table|dashboard)/i.test(item)
+    )
+      ? "simple_ui"
+      : "simple_ui");
+  const widgetSpec =
+    requirements.widgetSpec ?? inferWidgetSpec({ ...requirements, uiMode });
+  const deployment = requirements.deployment ?? {
+    provider: "local",
+    envNames: [],
+  };
+  const auth = requirements.auth ?? { type: "none" };
+  const appName =
+    requirements.appName ??
+    (requirements.appDescription
+      ? inferAppName(requirements.appDescription) ?? "Supreme ChatGPT App"
+      : undefined);
+  const appDescription = requirements.appDescription;
+  const targetUsers = requirements.targetUsers;
+  const successMetric = requirements.successMetric;
+
+  const candidate = {
+    appType,
+    targetUserAndSuccess: targetUsers && successMetric
+      ? `${targetUsers}. Success means ${successMetric}.`
+      : requirements.targetUserAndSuccess,
+    primaryFeatures,
+    dataIntegrations: requirements.dataIntegrations ?? [],
+    uiMode,
+    deployment,
+    appName,
+    appDescription,
+    targetUsers,
+    successMetric,
+    toolSpecs,
+    widgetSpec,
+    auth,
+    stackPreset: requirements.stackPreset ?? "mcp_apps_kit_react",
+    refinementBudget: requirements.refinementBudget ?? 8,
+    refinements: requirements.refinements ?? [],
+    rawPrompt: requirements.rawPrompt,
+  };
+
+  const parsed = AppRequirementsSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
 }
 
-function missingQuestion(state: SkillState): Question | null {
-  const req = state.requirements;
-  for (const question of QUESTIONS) {
+function missingQuestion(requirements: Partial<AppRequirements>): Question | null {
+  const required = [
+    ["identity", Boolean(requirements.appName && requirements.appDescription)],
+    ["users", Boolean(requirements.targetUsers)],
+    ["success", Boolean(requirements.successMetric)],
+    [
+      "features",
+      Boolean(requirements.primaryFeatures && requirements.primaryFeatures.length > 0),
+    ],
+    ["widget", Boolean(requirements.widgetSpec?.summary)],
+    [
+      "dataAuth",
+      Boolean(
+        requirements.dataIntegrations !== undefined && requirements.auth !== undefined
+      ),
+    ],
+    ["delivery", Boolean(requirements.deployment?.provider)],
+  ] as const;
+
+  const nextId = required.find(([, satisfied]) => !satisfied)?.[0];
+  return QUESTION_BANK.find((question) => question.id === nextId) ?? null;
+}
+
+function computeCompleteness(requirements: Partial<AppRequirements>): Completeness {
+  const total = QUESTION_BANK.length;
+  const missing = QUESTION_BANK.filter((question) => {
     switch (question.id) {
-      case "appType":
-        if (!req.appType) return question;
-        break;
-      case "targetUserAndSuccess":
-        if (!req.targetUserAndSuccess) return question;
-        break;
-      case "primaryFeatures":
-        if (!req.primaryFeatures || req.primaryFeatures.length === 0)
-          return question;
-        break;
-      case "dataIntegrations":
-        if (!req.dataIntegrations) return question;
-        break;
-      case "uiMode":
-        if (!req.uiMode) return question;
-        break;
-      case "deploymentProvider":
-        if (!req.deployment?.provider) return question;
-        break;
-      case "envNames":
-        if (!req.deployment?.envNames) return question;
-        break;
+      case "identity":
+        return !(requirements.appName && requirements.appDescription);
+      case "users":
+        return !requirements.targetUsers;
+      case "success":
+        return !requirements.successMetric;
+      case "features":
+        return !requirements.primaryFeatures || requirements.primaryFeatures.length === 0;
+      case "widget":
+        return !requirements.widgetSpec?.summary;
+      case "dataAuth":
+        return requirements.dataIntegrations === undefined || requirements.auth === undefined;
+      case "delivery":
+        return !requirements.deployment?.provider;
       default:
-        break;
+        return true;
     }
-  }
-  return null;
-}
-
-function handleCommand(state: SkillState, command: string) {
-  const normalized = command.toLowerCase();
-  if (normalized.includes("restart")) {
-    state.requirements = {};
-    state.logs = ["Restarted the build interview."];
-    state.stage = "collecting";
-    return;
-  }
-  if (normalized.includes("stop") || normalized.includes("cancel")) {
-    state.cancelled = true;
-    state.stage = "done";
-    state.logs = ["Build cancelled. Say 'restart' to begin again."];
-    return;
-  }
-  if (normalized.includes("change deployment") || normalized.includes("provider")) {
-    const provider = parseProvider(command);
-    if (provider) {
-      state.requirements.deployment = {
-        provider,
-        envNames: state.requirements.deployment?.envNames ?? [],
-      };
-      state.logs.push(`Deployment provider changed to ${provider}.`);
-    }
-  }
-}
-
-function buildRequirementsPreview(state: SkillState): Partial<AppRequirements> {
+  }).map((question) => question.id);
+  const answered = total - missing.length;
   return {
-    ...state.requirements,
-    appName: state.requirements.appName,
-    dataIntegrations: state.requirements.dataIntegrations ?? [],
+    answered,
+    total,
+    percent: Math.round((answered / total) * 100),
+    missing,
+    ready: missing.length === 0,
   };
 }
 
-export function runInterview(input: { message?: string; command?: string }, meta?: Record<string, unknown>) {
-  const sessionId = getSessionId(meta);
-  const state = getState(sessionId);
-  const message = normalize(input.message);
-  const command = normalize(input.command);
+function makeResult(state: SkillState, question: Question | null): InterviewResult {
+  const finalized = finalizeRequirements(state.requirements);
+  const plan = finalized ? createBuildPlan(finalized) : null;
+  const completeness = computeCompleteness(state.requirements);
 
-  if (command) {
-    handleCommand(state, command);
-  } else if (message) {
-    if (!state.requirements.rawPrompt) {
-      state.requirements.rawPrompt = message;
-    }
+  state.buildPlan = plan ?? undefined;
+  state.stage = finalized ? "confirm" : "collecting";
+
+  return {
+    stage: state.stage,
+    question,
+    requirements: finalized ?? state.requirements,
+    buildPlan: finalized ? buildPlanSummary(plan, finalized) : null,
+    deployment: {
+      provider:
+        finalized?.deployment.provider ?? state.requirements.deployment?.provider,
+    },
+    logs: state.logs,
+    completeness,
+    spec: {
+      appName: state.requirements.appName,
+      appDescription: state.requirements.appDescription,
+      targetUsers: state.requirements.targetUsers,
+      successMetric: state.requirements.successMetric,
+      stackPreset: state.requirements.stackPreset ?? "mcp_apps_kit_react",
+    },
+    validation: null,
+    benchmark: null,
+    artifacts: null,
+    iterations: [],
+  };
+}
+
+export function runInterview(
+  input: { message?: string; command?: string },
+  meta?: Record<string, unknown>
+): InterviewResult {
+  const sessionId = getSessionId(meta);
+  const state =
+    input.command?.toLowerCase().includes("restart")
+      ? resetState(sessionId)
+      : getState(sessionId);
+  const message = normalize(input.message);
+
+  if (message) {
+    inferFromPrompt(state, message);
     if (state.lastQuestionId) {
       applyAnswer(state, state.lastQuestionId, message);
-      state.lastQuestionId = undefined;
     }
-    inferFromPrompt(state, message);
+    state.logs = [...state.logs, `Captured input for ${state.lastQuestionId ?? "spec"}.`];
   }
 
-  if (state.cancelled) {
-    return {
-      stage: "done" as const,
-      logs: state.logs,
-      requirements: buildRequirementsPreview(state),
-      buildPlan: null,
-      deployment: null,
-      question: null,
-    };
+  const finalized = finalizeRequirements(state.requirements);
+  if (finalized) {
+    state.requirements = finalized;
+    state.lastQuestionId = undefined;
+    state.logs = [...state.logs, "Spec is complete and ready to generate."];
+    return makeResult(state, null);
   }
 
-  const nextQuestion = missingQuestion(state);
-  if (nextQuestion) {
-    state.stage = "collecting";
-    state.lastQuestionId = nextQuestion.id;
-    return {
-      stage: "collecting" as const,
-      logs: state.logs,
-      requirements: buildRequirementsPreview(state),
-      buildPlan: null,
-      deployment: null,
-      question: nextQuestion,
-    };
+  const question = missingQuestion(state.requirements);
+  state.lastQuestionId = question?.id;
+  if (question) {
+    state.askedQuestions += 1;
   }
-
-  const parsed = AppRequirementsSchema.safeParse({
-    ...state.requirements,
-    dataIntegrations: state.requirements.dataIntegrations ?? [],
-    deployment: state.requirements.deployment ?? {
-      provider: "vercel",
-      envNames: [],
-    },
-  });
-
-  if (!parsed.success) {
-    state.stage = "collecting";
-    state.logs.push("Some fields need attention. Let's keep going.");
-    return {
-      stage: "collecting" as const,
-      logs: state.logs,
-      requirements: buildRequirementsPreview(state),
-      buildPlan: null,
-      deployment: null,
-      question: missingQuestion(state),
-    };
-  }
-
-  const requirements = parsed.data;
-  if (!requirements.appName) {
-    requirements.appName = slugify(requirements.targetUserAndSuccess);
-  }
-
-  state.buildPlan = createBuildPlan(requirements);
-  state.requirements = requirements;
-  state.stage = "confirm";
-
-  return {
-    stage: "confirm" as const,
-    logs: state.logs,
-    requirements,
-    buildPlan: buildPlanSummary(state.buildPlan, requirements),
-    deployment: { provider: requirements.deployment.provider },
-    question: null,
-  };
+  return makeResult(state, question);
 }
 
-export function getConfirmedRequirements(meta?: Record<string, unknown>) {
+export function getConfirmedRequirements(
+  meta?: Record<string, unknown>
+): AppRequirements | null {
   const sessionId = getSessionId(meta);
   const state = getState(sessionId);
-  const parsed = AppRequirementsSchema.safeParse({
-    ...state.requirements,
-    dataIntegrations: state.requirements.dataIntegrations ?? [],
-    deployment: state.requirements.deployment ?? {
-      provider: "vercel",
-      envNames: [],
-    },
-  });
-
-  if (!parsed.success) {
-    return null;
-  }
-
-  return parsed.data;
-}
-
-export function updateState(meta: Record<string, unknown> | undefined, updates: Partial<SkillState>) {
-  const sessionId = getSessionId(meta);
-  const state = getState(sessionId);
-  Object.assign(state, updates);
-  return state;
-}
-
-export function resetInterview(meta?: Record<string, unknown>) {
-  const sessionId = getSessionId(meta);
-  return resetState(sessionId);
+  return finalizeRequirements(state.requirements);
 }

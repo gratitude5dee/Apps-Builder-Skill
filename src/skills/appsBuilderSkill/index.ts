@@ -1,11 +1,18 @@
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 import { runInterview, getConfirmedRequirements } from "./conversation.js";
 import { createBuildPlan, buildPlanSummary } from "./planner.js";
 import { generateApp } from "./generator.js";
 import { deployGeneratedApp } from "../../deploy/index.js";
+
+function buildPromptInstructions(url?: string) {
+  if (!url) {
+    return "Deployment complete. Follow the returned instructions to expose /mcp over HTTPS and add it in ChatGPT Developer Mode.";
+  }
+  return `Try it in ChatGPT Developer Mode by adding ${url}/mcp as a connector, then start a new chat and enable the connector from the More menu.`;
+}
 
 export function registerAppsBuilderSkill(
   server: McpServer,
@@ -17,7 +24,7 @@ export function registerAppsBuilderSkill(
     {
       title: "Apps Builder interview",
       description:
-        "Collects app requirements, asks the next question, and summarizes a build plan.",
+        "Collect app requirements adaptively, ask the next question, and summarize a v2 build plan.",
       inputSchema: {
         message: z.string().optional(),
         command: z.string().optional(),
@@ -42,8 +49,8 @@ export function registerAppsBuilderSkill(
             type: "text",
             text:
               result.stage === "collecting"
-                ? result.question?.prompt ?? "Let's continue."
-                : "Build plan ready."
+                ? result.question?.prompt ?? "Continue the spec."
+                : "Build plan ready.",
           },
         ],
         _meta: {},
@@ -57,7 +64,7 @@ export function registerAppsBuilderSkill(
     {
       title: "Generate and deploy app",
       description:
-        "Generates the app scaffold, validates it, and deploys via the chosen provider.",
+        "Generate the app scaffold, validate it, run the smoke benchmark, and deploy once the blocking gates pass.",
       inputSchema: {
         confirm: z.boolean().optional(),
         command: z.string().optional(),
@@ -74,47 +81,13 @@ export function registerAppsBuilderSkill(
     },
     async ({ confirm, command }, { _meta }) => {
       if (command?.toLowerCase().includes("restart")) {
-        const result = runInterview({ command: "restart" }, _meta);
+        const interview = runInterview({ command: "restart" }, _meta);
         return {
-          structuredContent: result,
+          structuredContent: interview,
           content: [
             {
               type: "text",
               text: "Restarted the interview.",
-            },
-          ],
-        };
-      }
-
-      if (!confirm) {
-        const requirements = getConfirmedRequirements(_meta);
-        if (!requirements) {
-          const interview = runInterview({ message: "" }, _meta);
-          return {
-            structuredContent: interview,
-            content: [
-              {
-                type: "text",
-                text: "We still need a few details before generating.",
-              },
-            ],
-          };
-        }
-
-        const plan = createBuildPlan(requirements);
-        return {
-          structuredContent: {
-            stage: "confirm",
-            requirements,
-            buildPlan: buildPlanSummary(plan, requirements),
-            deployment: { provider: requirements.deployment.provider },
-            question: null,
-            logs: ["Awaiting confirmation to generate and deploy."],
-          },
-          content: [
-            {
-              type: "text",
-              text: "Ready to generate and deploy. Please confirm.",
             },
           ],
         };
@@ -128,71 +101,138 @@ export function registerAppsBuilderSkill(
           content: [
             {
               type: "text",
-              text: "We still need a few details before generating.",
+              text: "A few v2 spec details are still missing before generation can start.",
             },
           ],
         };
       }
 
       const plan = createBuildPlan(requirements);
-      const logs: string[] = [];
 
-      try {
-        logs.push("Generating app scaffold...");
-        const generated = await generateApp(requirements, plan);
-        logs.push(`Generated ${generated.filesWritten} files.`);
-
-        logs.push("Validating generated app...");
-
-        logs.push("Starting deployment...");
-        const deployment = await deployGeneratedApp({
-          provider: requirements.deployment.provider,
-          projectDir: generated.projectDir,
-          projectName: requirements.appName ?? plan.appSlug,
-          envNames: requirements.deployment.envNames,
-        });
-
-        logs.push("Deployment step complete.");
-
-        const devModeInstructions = deployment.url
-          ? `Try it now in ChatGPT Developer Mode: add ${deployment.url}/mcp as a connector, then start a new chat and enable the connector from the More menu.`
-          : "Once deployed, add https://<your-domain>/mcp as a connector in ChatGPT Developer Mode.";
-
-        deployment.instructions = deployment.instructions
-          ? `${deployment.instructions}\\n\\n${devModeInstructions}`
-          : devModeInstructions;
-
+      if (!confirm) {
         return {
           structuredContent: {
-            stage: "done",
+            stage: "confirm",
+            question: null,
             requirements,
             buildPlan: buildPlanSummary(plan, requirements),
-            deployment,
-            question: null,
-            logs,
+            deployment: { provider: requirements.deployment.provider },
+            logs: ["Awaiting confirmation to run the generation, validation, and deployment loop."],
+            completeness: {
+              answered: 7,
+              total: 7,
+              percent: 100,
+              missing: [],
+              ready: true,
+            },
+            spec: {
+              appName: requirements.appName,
+              appDescription: requirements.appDescription,
+              targetUsers: requirements.targetUsers,
+              successMetric: requirements.successMetric,
+              stackPreset: requirements.stackPreset,
+            },
+            validation: null,
+            benchmark: null,
+            artifacts: null,
+            iterations: [],
           },
           content: [
             {
               type: "text",
-              text:
-                deployment.url
-                  ? `Deployed successfully: ${deployment.url}`
-                  : "Deployment complete. Follow the instructions to finish.",
+              text: "Ready to generate. Confirm to start the refinement loop.",
+            },
+          ],
+        };
+      }
+
+      const logs: string[] = ["Starting SupremeAppsBuilder v2 generation loop."];
+
+      try {
+        const generated = await generateApp(requirements, plan);
+        logs.push(`Generated ${generated.filesWritten} files in ${generated.projectDir}.`);
+        logs.push(generated.validation.summary);
+        logs.push(
+          `Smoke benchmark: ${generated.benchmark.passRate}% (${generated.benchmark.score}/${generated.benchmark.maxScore}).`
+        );
+
+        const deployment = await deployGeneratedApp({
+          provider: requirements.deployment.provider,
+          projectDir: generated.projectDir,
+          projectName: requirements.appName,
+          envNames: requirements.deployment.envNames,
+        });
+
+        deployment.instructions = deployment.instructions
+          ? `${deployment.instructions}\n\n${buildPromptInstructions(deployment.url)}`
+          : buildPromptInstructions(deployment.url);
+
+        return {
+          structuredContent: {
+            stage: "done",
+            question: null,
+            requirements,
+            buildPlan: buildPlanSummary(generated.plan, requirements),
+            deployment,
+            logs,
+            completeness: {
+              answered: 7,
+              total: 7,
+              percent: 100,
+              missing: [],
+              ready: true,
+            },
+            spec: {
+              appName: requirements.appName,
+              appDescription: requirements.appDescription,
+              targetUsers: requirements.targetUsers,
+              successMetric: requirements.successMetric,
+              stackPreset: requirements.stackPreset,
+            },
+            validation: generated.validation,
+            benchmark: generated.benchmark,
+            artifacts: generated.artifacts,
+            iterations: generated.iterations,
+          },
+          content: [
+            {
+              type: "text",
+              text: deployment.url
+                ? `Generation complete: ${deployment.url}`
+                : "Generation complete. Follow the deployment instructions to finish.",
             },
           ],
         };
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Unknown error occurred";
+          error instanceof Error ? error.message : "Unknown generation error";
         logs.push(`Error: ${message}`);
         return {
           structuredContent: {
             stage: "error",
+            question: null,
             requirements,
             buildPlan: buildPlanSummary(plan, requirements),
             deployment: { provider: requirements.deployment.provider },
-            question: null,
             logs,
+            completeness: {
+              answered: 7,
+              total: 7,
+              percent: 100,
+              missing: [],
+              ready: true,
+            },
+            spec: {
+              appName: requirements.appName,
+              appDescription: requirements.appDescription,
+              targetUsers: requirements.targetUsers,
+              successMetric: requirements.successMetric,
+              stackPreset: requirements.stackPreset,
+            },
+            validation: null,
+            benchmark: null,
+            artifacts: null,
+            iterations: [],
           },
           content: [
             {

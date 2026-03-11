@@ -1,6 +1,9 @@
-import type { BuildPlan } from "../../../skills/appsBuilderSkill/schema.js";
+import type {
+  AppRequirements,
+  BuildPlan,
+} from "../../../skills/appsBuilderSkill/schema.js";
 
-export function renderServer(plan: BuildPlan) {
+export function renderServer(plan: BuildPlan, requirements: AppRequirements) {
   const toolDefinitions = plan.tools
     .map(
       (tool) => `  {
@@ -37,8 +40,6 @@ ${toolDefinitions}
 ];
 
 function readWidgetHtml(): string {
-  // Vite writes the manifest to "dist/.vite/manifest.json" by default, but older
-  // builds/configs may place it at "dist/manifest.json". Support both.
   const manifestCandidates = [
     path.join(WEB_DIST, "manifest.json"),
     path.join(WEB_DIST, ".vite", "manifest.json"),
@@ -66,7 +67,7 @@ function readWidgetHtml(): string {
     .map((cssFile: string) =>
       fs.readFileSync(path.join(WEB_DIST, cssFile), "utf8")
     )
-    .join("\n");
+    .join("\\n");
 
   return [
     '<div id="app-root"></div>',
@@ -74,7 +75,25 @@ function readWidgetHtml(): string {
     '<script type="module">' + js + "</script>",
   ]
     .filter(Boolean)
-    .join("\n");
+    .join("\\n");
+}
+
+function buildResult(toolName: string, prompt: string) {
+  return {
+    structuredContent: {
+      appName: appConfig.name,
+      tool: toolName,
+      prompt,
+      message: "Executed " + toolName,
+      insight: ${JSON.stringify(requirements.successMetric)},
+    },
+    content: [
+      {
+        type: "text",
+        text: "Executed " + toolName + ".",
+      },
+    ],
+  };
 }
 
 export function getServer(): McpServer {
@@ -102,6 +121,9 @@ export function getServer(): McpServer {
               prefersBorder: appConfig.widget.prefersBorder,
               csp: appConfig.widget.csp,
             },
+            "openai/widgetDescription": ${JSON.stringify(
+              `${requirements.appDescription} Built with SupremeAppsBuilder v2.`
+            )},
           },
         },
       ],
@@ -121,6 +143,8 @@ export function getServer(): McpServer {
         _meta: {
           ui: { resourceUri: appConfig.widget.resourceUri },
           "openai/outputTemplate": appConfig.widget.resourceUri,
+          "openai/toolInvocation/invoking": "Preparing " + tool.title,
+          "openai/toolInvocation/invoked": tool.title + " ready",
         },
         annotations: {
           readOnlyHint: tool.readOnlyHint,
@@ -128,22 +152,7 @@ export function getServer(): McpServer {
           destructiveHint: tool.destructiveHint,
         },
       },
-      async ({ prompt }) => {
-        return {
-          structuredContent: {
-            appName: appConfig.name,
-            tool: tool.name,
-            prompt: prompt ?? "",
-            message: "Ran " + tool.name,
-          },
-          content: [
-            {
-              type: "text",
-              text: "Executed " + tool.title + ".",
-            },
-          ],
-        };
-      }
+      async ({ prompt }) => buildResult(tool.name, prompt ?? "")
     );
   });
 

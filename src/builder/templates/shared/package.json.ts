@@ -11,14 +11,16 @@ export function renderPackageJson(appSlug: string, _appName: string) {
       build: "pnpm build:server && pnpm build:web",
       "build:server": "tsc -p tsconfig.json",
       "build:web": "pnpm --dir web build",
+      benchmark: "tsx src/benchmark.ts",
       lint: "eslint . --ext .ts,.tsx",
-      typecheck: "tsc -p tsconfig.json --noEmit"
+      test: "vitest run",
+      typecheck: "tsc -p tsconfig.json --noEmit",
     },
     dependencies: {
       "@modelcontextprotocol/ext-apps": "^1.0.1",
       "@modelcontextprotocol/sdk": "^1.20.2",
       express: "^4.19.2",
-      zod: "^3.25.76"
+      zod: "^3.25.76",
     },
     devDependencies: {
       "@eslint/js": "^9.8.0",
@@ -28,8 +30,9 @@ export function renderPackageJson(appSlug: string, _appName: string) {
       eslint: "^9.8.0",
       tsx: "^4.20.5",
       typescript: "^5.6.3",
-      "typescript-eslint": "^8.4.0"
-    }
+      "typescript-eslint": "^8.4.0",
+      vitest: "^2.0.5",
+    },
   };
 
   return JSON.stringify(pkg, null, 2);
